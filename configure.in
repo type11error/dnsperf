@@ -55,6 +55,8 @@ AC_DEFUN(AC_SA_LEN,
 AC_CHECK_LIB(socket, socket)
 AC_CHECK_LIB(nsl, inet_ntoa)
 
+AC_CHECK_LIB(json-c,json_object_new_object)
+
 AC_PATH_PROG(ac_cv_isc_config, [isc-config.sh], "no")
 if test "$ac_cv_isc_config" = "no"; then
   AC_MSG_ERROR(BIND 9 libraries must be installed)

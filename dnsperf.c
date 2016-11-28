@@ -46,6 +46,8 @@
 #include <dns/rcode.h>
 #include <dns/result.h>
 
+#include <json-c/json.h>
+
 #include "net.h"
 #include "datafile.h"
 #include "dns.h"
@@ -90,6 +92,7 @@ typedef struct {
     isc_uint64_t stats_interval;
     isc_boolean_t updates;
     isc_boolean_t verbose;
+    char *        json_output;
 } config_t;
 
 typedef struct {
@@ -182,7 +185,7 @@ static void
 handle_sigint(int sig)
 {
     (void)sig;
-    write(intrpipe[1], "", 1);
+    int ret = write(intrpipe[1], "", 1);
 }
 
 static void
@@ -318,6 +321,73 @@ print_statistics(const config_t *config, const times_t *times, stats_t *stats)
     printf("\n");
 }
 
+static json_object *
+json_statistics(const config_t *config, const times_t *times, stats_t *stats)
+{
+    const char *units;
+    isc_uint64_t run_time;
+    unsigned int i;
+
+    units = config->updates ? "Updates" : "Queries";
+
+    run_time = times->end_time - times->start_time;
+/*
+typedef struct {
+    isc_uint64_t rcodecounts[16];
+
+    isc_uint64_t num_sent;
+    isc_uint64_t num_interrupted;
+    isc_uint64_t num_timedout;
+    isc_uint64_t num_completed;
+
+    isc_uint64_t total_request_size;
+    isc_uint64_t total_response_size;
+
+    isc_uint64_t latency_sum;
+    isc_uint64_t latency_sum_squares;
+    isc_uint64_t latency_min;
+    isc_uint64_t latency_max;
+} stats_t;
+*/
+
+    json_object *jstats = json_object_new_object();
+    json_object_object_add(jstats, "units", json_object_new_string(units));
+    json_object_object_add(jstats, "num_sent", json_object_new_int64(stats->num_sent));
+    json_object_object_add(jstats, "num_interrupted", json_object_new_int64(stats->num_interrupted));
+    json_object_object_add(jstats, "num_timedout", json_object_new_int64(stats->num_timedout));
+    json_object_object_add(jstats, "num_completed", json_object_new_int64(stats->num_completed));
+
+    json_object *jcodes = json_object_new_object();
+    for (i = 0; i < 16; i++) {
+        json_object_object_add(jcodes, perf_dns_rcode_strings[i], 
+                               json_object_new_int(stats->rcodecounts[i]));
+    }
+    json_object_object_add(jstats, "rcode_counts", jcodes);
+
+    json_object_object_add(jstats, "total_request_size", 
+        json_object_new_int64(stats->total_request_size));
+    json_object_object_add(jstats, "total_response_size", 
+        json_object_new_int64(stats->total_response_size));
+    json_object_object_add(jstats, "run_time", 
+        json_object_new_int64(run_time));
+
+    json_object_object_add(jstats, "latency_sum", 
+        json_object_new_int((unsigned int)stats->latency_sum));
+
+    json_object_object_add(jstats, "latency_sum", 
+        json_object_new_int((unsigned int)stats->latency_sum_squares));
+
+    json_object_object_add(jstats, "latency_min", 
+        json_object_new_int((unsigned int)stats->latency_min));
+
+    json_object_object_add(jstats, "latency_max", 
+        json_object_new_int((unsigned int)stats->latency_min));
+
+  return jstats;
+
+}
+
+
 static void
 sum_stats(const config_t *config, stats_t *total)
 {
@@ -442,6 +512,9 @@ setup(int argc, char **argv, config_t *config)
     perf_opt_add('u', perf_opt_boolean, NULL,
                  "send dynamic updates instead of queries",
                  NULL, &config->updates);
+    perf_opt_add('j', perf_opt_string, NULL,
+                 "output statistics in json to file",
+                 NULL, &config->json_output);
     perf_opt_add('v', perf_opt_boolean, NULL,
                  "verbose: report each query to stdout",
                  NULL, &config->verbose);
@@ -667,7 +740,7 @@ do_send(void *arg)
     }
     tinfo->done_send_time = get_time();
     tinfo->done_sending = ISC_TRUE;
-    write(mainpipe[1], "", 1);
+    int ret = write(mainpipe[1], "", 1);
     return NULL;
 }
 
@@ -1120,7 +1193,7 @@ main(int argc, char **argv)
 
     times.end_time = get_time();
 
-    write(threadpipe[1], "", 1);
+    int ret = write(threadpipe[1], "", 1);
     for (i = 0; i < config.threads; i++)
         threadinfo_stop(&threads[i]);
     if (config.stats_interval > 0)
@@ -1133,6 +1206,19 @@ main(int argc, char **argv)
 
     sum_stats(&config, &total_stats);
     print_statistics(&config, &times, &total_stats);
+
+    if(config.json_output) {
+      json_object *jstats = json_statistics(&config, &times, &total_stats);
+      FILE *fp = fopen(config.json_output, "w");
+      if (fp != NULL)
+      {
+        fputs(json_object_to_json_string_ext(jstats, JSON_C_TO_STRING_PRETTY), fp);
+        fclose(fp);
+      }
+      else {
+        printf("Error outputting json to %s: %s", config.json_output, strerror(errno));
+      }
+    }
 
     isc_mem_put(mctx, threads, config.threads * sizeof(threadinfo_t));
     cleanup(&config);
